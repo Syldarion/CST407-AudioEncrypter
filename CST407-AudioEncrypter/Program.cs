@@ -1,21 +1,22 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
+using System.Windows.Forms;
 
 namespace CST407_AudioEncrypter
 {
-    class Program
+    static class Program
     {
-        static void Main(string[] args)
+        /// <summary>
+        /// The main entry point for the application.
+        /// </summary>
+        [STAThread]
+        static void Main()
         {
-            AudioEncrypter file = new AudioEncrypter();
-            file.WavToBytes(@"C:\Users\parag\Desktop\test_file.wav");
-            file.AddMessage("Hello World");
-            file.BytesToWav(@"C:\Users\parag\Desktop\test_result.wav");
-            Console.WriteLine(file.RemoveMessage());
-            Console.ReadLine();
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            Application.Run(new Form1());
         }
     }
 }

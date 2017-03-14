@@ -1,16 +1,14 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
-using System.Threading.Tasks;
 
 namespace CST407_AudioEncrypter
 {
-    public class AudioEncrypter
+    public class AudioEncoder
     {
-        const int HEADER_SIZE = 44;
-
+        int headerSize;
         byte[] chunkID;
         byte[] fileSize;
         byte[] riffType;
@@ -22,14 +20,14 @@ namespace CST407_AudioEncrypter
         byte[] fmtAverageBPS;
         byte[] fmtBlockAlign;
         byte[] bitDepth;
-        //byte[] fmtExtraSize;
+        byte[] fmtExtraBytes;
         byte[] dataID;
         byte[] dataSize;
         byte[] data;
 
         bool invalid;
 
-        public AudioEncrypter()
+        public AudioEncoder()
         {
             chunkID = new byte[4];
             fileSize = new byte[4];
@@ -47,21 +45,88 @@ namespace CST407_AudioEncrypter
             invalid = false;
         }
 
-        public void AddMessage(string message)
+        public byte[] EncryptMessage(string message, byte[] key)
+        {
+            byte[] encrypted;
+            byte[] iv;
+
+            using (Aes aes = Aes.Create())
+            {
+                aes.Key = key;
+                aes.GenerateIV();
+                iv = aes.IV;
+
+                aes.Mode = CipherMode.CBC;
+
+                var encryptor = aes.CreateEncryptor(aes.Key, aes.IV);
+
+                using (var ms = new MemoryStream())
+                {
+                    using (var cs = new CryptoStream(ms, encryptor, CryptoStreamMode.Write))
+                    {
+                        using (var sw = new StreamWriter(cs))
+                        {
+                            sw.Write(message);
+                        }
+                        encrypted = ms.ToArray();
+                    }
+                }
+            }
+
+            var combined = new byte[iv.Length + encrypted.Length];
+            Array.Copy(iv, 0, combined, 0, iv.Length);
+            Array.Copy(encrypted, 0, combined, iv.Length, encrypted.Length);
+
+            return combined;
+        }
+
+        public string DecryptMessage(byte[] combined, byte[] key)
+        {
+            string plain_text;
+
+            using (Aes aes = Aes.Create())
+            {
+                aes.Key = key;
+                byte[] iv = new byte[aes.BlockSize / 8];
+                byte[] cipher_text = new byte[combined.Length - iv.Length];
+
+                Array.Copy(combined, iv, iv.Length);
+                Array.Copy(combined, iv.Length, cipher_text, 0, cipher_text.Length);
+
+                aes.IV = iv;
+                aes.Mode = CipherMode.CBC;
+
+                var decryptor = aes.CreateDecryptor(aes.Key, aes.IV);
+
+                using (var ms = new MemoryStream(cipher_text))
+                {
+                    using (var cs = new CryptoStream(ms, decryptor, CryptoStreamMode.Read))
+                    {
+                        using (var sr = new StreamReader(cs))
+                        {
+                            plain_text = sr.ReadToEnd();
+                        }
+                    }
+                }
+            }
+
+            return plain_text;
+        }
+
+        public void AddMessage(byte[] message)
         {
             if (invalid) return;
 
             unchecked
             {
                 byte[] temp_data = new byte[data.Length];
-                byte[] string_data = Encoding.UTF8.GetBytes(message);
                 Buffer.BlockCopy(data, 0, temp_data, 0, data.Length);
                 int dat_idx = 0;
-                for (int i = 0; i < string_data.Length; i++)
+                for (int i = 0; i < message.Length; i++)
                 {
                     for (int b = 0; b < 8 && dat_idx < temp_data.Length; b++, dat_idx++)
                     {
-                        if((byte)((string_data[i] >> b) & 1) == 1)
+                        if ((byte)((message[i] >> b) & 1) == 1)
                             temp_data[dat_idx] |= 1;
                         else
                             temp_data[dat_idx] &= (byte)~1;
@@ -75,11 +140,11 @@ namespace CST407_AudioEncrypter
             }
         }
 
-        public string RemoveMessage()
+        public byte[] RemoveMessage()
         {
             if (invalid) return null;
 
-            string result = string.Empty;
+            List<byte> result = new List<byte>();
 
             unchecked
             {
@@ -92,11 +157,12 @@ namespace CST407_AudioEncrypter
                     grabbed = 0;
                     for (int i = 0; i < 8 && dat_idx < temp_data.Length; i++, dat_idx++)
                         grabbed |= (byte)((temp_data[dat_idx] & 1) << i);
-                    result += (char)grabbed;
+                    if (grabbed != 0)
+                        result.Add(grabbed);
                 } while (grabbed != 0);
             }
 
-            return result;
+            return result.ToArray();
         }
 
         public void WavToBytes(string filePath)
@@ -113,19 +179,27 @@ namespace CST407_AudioEncrypter
                     throw new Exception("Provided file is not in a WAVE format");
                 Buffer.BlockCopy(wav_bytes, 12, fmtID, 0, 4);
                 Buffer.BlockCopy(wav_bytes, 16, fmtSize, 0, 4);
+
+                int format_size = BitConverter.ToInt32(fmtSize, 0);
+                fmtExtraBytes = new byte[format_size - 16];
+
                 Buffer.BlockCopy(wav_bytes, 20, fmtCode, 0, 2);
                 Buffer.BlockCopy(wav_bytes, 22, channels, 0, 2);
                 Buffer.BlockCopy(wav_bytes, 24, sampleRate, 0, 4);
                 Buffer.BlockCopy(wav_bytes, 28, fmtAverageBPS, 0, 4);
                 Buffer.BlockCopy(wav_bytes, 32, fmtBlockAlign, 0, 2);
                 Buffer.BlockCopy(wav_bytes, 34, bitDepth, 0, 2);
-                Buffer.BlockCopy(wav_bytes, 36, dataID, 0, 4);
-                Buffer.BlockCopy(wav_bytes, 40, dataSize, 0, 4);
+                Buffer.BlockCopy(wav_bytes, 36, fmtExtraBytes, 0, format_size - 16);
 
-                data = new byte[wav_bytes.Length - HEADER_SIZE];
-                Buffer.BlockCopy(wav_bytes, 44, data, 0, wav_bytes.Length - HEADER_SIZE);
+                Buffer.BlockCopy(wav_bytes, 36 + format_size - 16, dataID, 0, 4);
+                Buffer.BlockCopy(wav_bytes, 40 + format_size - 16, dataSize, 0, 4);
+
+                headerSize = 44 + format_size - 16;
+
+                data = new byte[wav_bytes.Length - headerSize];
+                Buffer.BlockCopy(wav_bytes, headerSize, data, 0, wav_bytes.Length - headerSize);
             }
-            catch(Exception ex)
+            catch (Exception ex)
             {
                 Console.WriteLine(ex.Message);
                 invalid = true;
@@ -138,25 +212,32 @@ namespace CST407_AudioEncrypter
 
             try
             {
-                byte[] wav_bytes = new byte[data.Length + HEADER_SIZE];
+                byte[] wav_bytes = new byte[data.Length + headerSize];
                 Buffer.BlockCopy(chunkID, 0, wav_bytes, 0, 4);
                 Buffer.BlockCopy(fileSize, 0, wav_bytes, 4, 4);
                 Buffer.BlockCopy(riffType, 0, wav_bytes, 8, 4);
                 Buffer.BlockCopy(fmtID, 0, wav_bytes, 12, 4);
                 Buffer.BlockCopy(fmtSize, 0, wav_bytes, 16, 4);
+
+                int format_size = BitConverter.ToInt32(fmtSize, 0);
+
                 Buffer.BlockCopy(fmtCode, 0, wav_bytes, 20, 2);
                 Buffer.BlockCopy(channels, 0, wav_bytes, 22, 2);
                 Buffer.BlockCopy(sampleRate, 0, wav_bytes, 24, 4);
                 Buffer.BlockCopy(fmtAverageBPS, 0, wav_bytes, 28, 4);
                 Buffer.BlockCopy(fmtBlockAlign, 0, wav_bytes, 32, 2);
                 Buffer.BlockCopy(bitDepth, 0, wav_bytes, 34, 2);
-                Buffer.BlockCopy(dataID, 0, wav_bytes, 36, 4);
-                Buffer.BlockCopy(dataSize, 0, wav_bytes, 40, 4);
-                Buffer.BlockCopy(data, 0, wav_bytes, 44, data.Length);
+
+                Buffer.BlockCopy(fmtExtraBytes, 0, wav_bytes, 36, format_size - 16);
+
+                Buffer.BlockCopy(dataID, 0, wav_bytes, 36 + format_size - 16, 4);
+                Buffer.BlockCopy(dataSize, 0, wav_bytes, 40 + format_size - 16, 4);
+
+                Buffer.BlockCopy(data, 0, wav_bytes, headerSize, data.Length);
 
                 File.WriteAllBytes(filePath, wav_bytes);
             }
-            catch(Exception ex)
+            catch (Exception ex)
             {
                 Console.WriteLine(ex.Message);
             }
